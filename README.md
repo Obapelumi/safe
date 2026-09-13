@@ -18,9 +18,41 @@ It is honest about the limits — read [Limits](#limits) before you run it.
 |---|---|---|
 | `/etc/hosts` blocklist | Blackholes ~77k adult domains at the resolver | `chflags schg` — needs Recovery to edit |
 | Browser policy | Forces Chrome/Edge/Firefox/Zen to use the OS resolver (kills DoH bypass) | Machine-level plist, admin can delete |
-| `pf` anchor | Blocks plain DNS (53), DoT (853), and known DoH resolver IPs | LaunchDaemon, admin can unload |
+| `pf` anchor | Blocks plain DNS (53), DoT (853), and third-party DoH resolvers — **WARP-aware** | LaunchDaemon, admin can unload |
 | `.mobileconfig` | System content filter for Safari *and* third-party apps | Manual approval; best-effort non-removable |
 | Burned secret | AES-encrypts the rollback bundle, then deletes the key | **The real gate** |
+
+## WARP / Zero Trust compatibility
+
+If you use Cloudflare WARP in Zero Trust mode, the tool works *with* it, not
+against it. WARP is the enforcement; `safe` is the tamper-resistance.
+
+The `pf` anchor is allow-list driven:
+
+- **All Cloudflare ranges are passed** (`cloudflareV4` / `cloudflareV6`, from
+  `cloudflare.com/ips-v4`). WARP egress, Gateway DoH, and 1.1.1.1 all live inside
+  these. Blocking them would kill your tunnel.
+- **Third-party DoH resolvers are blocked** (Google, Quad9, AdGuard, OpenDNS,
+  CleanBrowsing, Control D, Neustar, NextDNS). These are the escape hatches a
+  browser could otherwise use to dodge both WARP and `/etc/hosts`.
+- **Plain DNS and DoT are blocked outside Cloudflare**, while RFC1918/local
+  ranges are passed so local services still resolve.
+
+So a VPN or other tunnel keeps working, but a browser cannot quietly switch to
+`8.8.8.8` to bypass you.
+
+Note on mode: in `WarpWithDnsOverHttps` (traffic + DNS through the tunnel — the
+Zero Trust default), all DNS goes through Gateway, so you are covered by WARP
+itself. If you ever run DNS-only (`1dot1`) mode, resolution goes to 1.1.1.1,
+which is *inside* the passed Cloudflare ranges, so it still works.
+
+Refresh the Cloudflare ranges occasionally — Cloudflare adds them rarely. Get the
+current list with:
+
+```sh
+curl -s https://www.cloudflare.com/ips-v4
+curl -s https://www.cloudflare.com/ips-v6
+```
 
 ## Install
 

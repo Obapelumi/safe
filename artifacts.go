@@ -41,27 +41,80 @@ const launchDaemon = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// renderPFAnchor blocks plain DNS (53) and DNS-over-TLS (853) and the well-known
-// DoH resolver endpoints, forcing resolution through the OS resolver.
+// cloudflareV4 and cloudflareV6 are Cloudflare's published ranges, fetched from
+// https://www.cloudflare.com/ips-v4 and /ips-v6. WARP egress, Gateway DoH, and
+// 1.1.1.1 all live inside these. They must never be blocked or the tunnel dies.
+// Refresh occasionally; Cloudflare adds ranges rarely.
+var cloudflareV4 = []string{
+	"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+	"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+	"197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+	"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+}
+
+var cloudflareV6 = []string{
+	"2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+	"2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+}
+
+// renderPFAnchor closes the non-WARP DNS escape hatches while leaving Cloudflare
+// (and therefore WARP / Zero Trust Gateway DoH) fully reachable.
+//
+// Design:
+//   - pass everything to Cloudflare ranges: this is the VPN's own traffic.
+//   - block TCP 443 to known *third-party* DoH resolver IPs.
+//   - block 53/853 to anything outside Cloudflare, so plain DNS and DoT leaks
+//     are closed but the tunnel's own resolution still works.
 func renderPFAnchor() (string, error) {
-	doh := []string{
-		"1.1.1.1", "1.0.0.1", // Cloudflare
+	nonCloudflareDoH := []string{
 		"8.8.8.8", "8.8.4.4", // Google
 		"9.9.9.9", "149.112.112.112", // Quad9
 		"94.140.14.14", "94.140.15.15", // AdGuard
 		"208.67.222.222", "208.67.220.220", // OpenDNS
 		"185.228.168.9", "185.228.169.9", // CleanBrowsing
+		"76.76.2.0", "76.76.10.0", // Control D
+		"156.154.70.1", "156.154.71.1", // Neustar
+		"45.90.28.0", "45.90.30.0", // NextDNS
 	}
+
 	var b []byte
-	b = append(b, []byte("# safe pf anchor - DNS lock\n")...)
-	for _, ip := range doh {
-		b = append(b, []byte(fmt.Sprintf("block drop out quick proto tcp to %s port 443\n", ip))...)
+	p := func(s string) { b = append(b, []byte(s+"\n")...) }
+
+	p("# safe pf anchor - DNS lock (WARP-aware)")
+	p("#")
+	p("# Cloudflare ranges are passed wholesale: WARP egress, Zero Trust Gateway")
+	p("# DoH, and 1.1.1.1 all live there. Blocking them would kill the tunnel.")
+	for _, cidr := range cloudflareV4 {
+		p(fmt.Sprintf("pass out quick to %s", cidr))
 	}
-	b = append(b, []byte("block drop out quick proto udp to any port 53\n")...)
-	b = append(b, []byte("block drop out quick proto tcp to any port 53\n")...)
-	b = append(b, []byte("block drop out quick proto tcp to any port 853\n")...)
-	b = append(b, []byte("block drop out quick proto udp to any port 853\n")...)
+	for _, cidr := range cloudflareV6 {
+		p(fmt.Sprintf("pass out quick to %s", cidr))
+	}
+
+	p("#")
+	p("# Third-party public DoH resolvers: block HTTPS so browsers/apps can't")
+	p("# sidestep the tunnel with their own secure DNS.")
+	for _, ip := range nonCloudflareDoH {
+		p(fmt.Sprintf("block drop out quick proto tcp to %s port 443", ip))
+	}
+
+	p("#")
+	p("# Plain DNS (53) and DoT (853) to anything outside Cloudflare. RF")
+	p("# (RFC1918) is allowed so local services still resolve.")
+	for _, cidr := range localNetworks {
+		p(fmt.Sprintf("pass out quick to %s", cidr))
+	}
+	p("block drop out quick proto udp to any port 53")
+	p("block drop out quick proto tcp to any port 53")
+	p("block drop out quick proto tcp to any port 853")
+	p("block drop out quick proto udp to any port 853")
+
 	return string(b), nil
+}
+
+var localNetworks = []string{
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16",
+	"fc00::/7", "fe80::/10", "::1",
 }
 
 // renderProfile builds a best-effort non-removable content filter profile.
