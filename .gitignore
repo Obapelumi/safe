@@ -1,0 +1,6 @@
+out/
+secret.txt
+rollback.sh
+safe
+*.test
+.DS_Store
